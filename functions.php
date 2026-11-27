@@ -1,12 +1,59 @@
 <?php
-/**
- * Theme setup and local assets for the unofficial FySelf Spanish homepage replica.
- */
+/** Local static replica of the public FySelf Spanish site pages. */
 function fyself_homepage_es_setup() {
     add_theme_support( 'post-thumbnails' );
     add_theme_support( 'responsive-embeds' );
 }
 add_action( 'after_setup_theme', 'fyself_homepage_es_setup' );
+
+function fyself_theme_pages() {
+    static $pages = null;
+    if ( null === $pages ) {
+        $pages = require get_theme_file_path( '/pages/manifest.php' );
+    }
+    return $pages;
+}
+
+function fyself_current_page_info() {
+    $route = (string) get_query_var( 'fyself_mirror_page' );
+    if ( 'home' === $route || ( '' === $route && is_front_page() ) ) {
+        return [
+            'title' => 'FySelf — Encuentra tu yo digital',
+            'body_class' => 'home wp-singular page-template-default page page-id-1849 wp-custom-logo wp-embed-responsive wp-theme-hello-elementor hello-elementor-default elementor-default elementor-kit-1426 elementor-page elementor-page-1849',
+            'styles' => [ 'assets/page-inline.css' ],
+        ];
+    }
+    $pages = fyself_theme_pages();
+    return isset( $pages[ $route ] ) ? $pages[ $route ] : null;
+}
+
+function fyself_register_mirror_routes() {
+    add_rewrite_tag( '%fyself_mirror_page%', '([^&]+)' );
+    add_rewrite_rule( '^es/?$', 'index.php?fyself_mirror_page=home', 'top' );
+    foreach ( array_keys( fyself_theme_pages() ) as $slug ) {
+        add_rewrite_rule( '^es/' . preg_quote( $slug, '#' ) . '/?$', 'index.php?fyself_mirror_page=' . $slug, 'top' );
+    }
+}
+add_action( 'init', 'fyself_register_mirror_routes' );
+
+function fyself_add_mirror_query_var( $vars ) {
+    $vars[] = 'fyself_mirror_page';
+    return $vars;
+}
+add_filter( 'query_vars', 'fyself_add_mirror_query_var' );
+
+function fyself_select_mirror_template( $template ) {
+    $route = (string) get_query_var( 'fyself_mirror_page' );
+    if ( 'home' === $route ) {
+        return get_theme_file_path( '/front-page.php' );
+    }
+    if ( isset( fyself_theme_pages()[ $route ] ) ) {
+        return get_theme_file_path( '/mirror-page.php' );
+    }
+    return $template;
+}
+add_filter( 'template_include', 'fyself_select_mirror_template', 99 );
+add_action( 'after_switch_theme', 'flush_rewrite_rules' );
 
 function fyself_homepage_es_enqueue_assets() {
     $styles = [
@@ -44,9 +91,12 @@ function fyself_homepage_es_enqueue_assets() {
         'assets/fonts.googleapis.com/css__q__family=Raleway:100,100italic,200,200italic,300,300italic,400,400italic,500,500italic,600,600italic,700,700italic,800,800italic,900,900italic&display=swap.css',
         'assets/fyself.com/wp-content/uploads/elementor/google-fonts/css/mulish.css__q__ver=1742677126.css',
         'assets/fyself.com/wp-content/uploads/elementor/custom-icons/icomoon/style.css__q__ver=1.0.0.css',
-        'assets/page-inline.css',
     ];
-    foreach ( $styles as $index => $relative_path ) {
+    $page = fyself_current_page_info();
+    if ( is_array( $page ) && ! empty( $page['styles'] ) ) {
+        $styles = array_merge( $styles, $page['styles'] );
+    }
+    foreach ( array_unique( $styles ) as $index => $relative_path ) {
         $file = get_theme_file_path( '/' . $relative_path );
         if ( file_exists( $file ) ) {
             wp_enqueue_style( 'fyself-homepage-es-' . $index, get_theme_file_uri( '/' . $relative_path ), [], (string) filemtime( $file ) );
@@ -54,3 +104,44 @@ function fyself_homepage_es_enqueue_assets() {
     }
 }
 add_action( 'wp_enqueue_scripts', 'fyself_homepage_es_enqueue_assets', 20 );
+
+function fyself_localize_internal_links( $html ) {
+    if ( ! is_string( $html ) ) {
+        return $html;
+    }
+    $pages = fyself_theme_pages();
+    $pattern = '/\b(href|action)=(["\'])(https?:\/\/(?:www\.)?fyself\.com\/es\/[^"\']*)\2/i';
+    $html = preg_replace_callback( $pattern, function( $match ) use ( $pages ) {
+        $url = html_entity_decode( $match[3], ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+        $parts = wp_parse_url( $url );
+        $path = isset( $parts['path'] ) ? $parts['path'] : '/es/';
+        $slug = trim( preg_replace( '#^/es/?#', '', $path ), '/' );
+        if ( '' === $slug ) {
+            $local_url = home_url( '/' );
+        } elseif ( isset( $pages[ $slug ] ) ) {
+            $local_url = get_option( 'permalink_structure' )
+                ? home_url( '/es/' . $slug . '/' )
+                : add_query_arg( 'fyself_mirror_page', $slug, home_url( '/' ) );
+        } else {
+            return $match[0];
+        }
+        if ( ! empty( $parts['query'] ) ) {
+            $local_url .= ( false === strpos( $local_url, '?' ) ? '?' : '&' ) . $parts['query'];
+        }
+        if ( ! empty( $parts['fragment'] ) ) {
+            $local_url .= '#' . $parts['fragment'];
+        }
+        return $match[1] . '=' . $match[2] . esc_url( $local_url ) . $match[2];
+    }, $html );
+    $home_pattern = '/\b(href|action)=(["\'])https?:\/\/(?:www\.)?fyself\.com\/\2/i';
+    return preg_replace_callback( $home_pattern, function( $match ) {
+        return $match[1] . '=' . $match[2] . esc_url( home_url( '/' ) ) . $match[2];
+    }, $html );
+}
+
+function fyself_start_local_link_rewrite() {
+    if ( is_front_page() || get_query_var( 'fyself_mirror_page' ) ) {
+        ob_start( 'fyself_localize_internal_links' );
+    }
+}
+add_action( 'template_redirect', 'fyself_start_local_link_rewrite', 0 );
